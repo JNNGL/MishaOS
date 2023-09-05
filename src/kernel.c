@@ -281,7 +281,7 @@ void kernel_main(kernel_meminfo_t meminfo, struct multiboot* multiboot, uint32_t
     puts("Initializing multitasking...");
     init_process(esp);
 
-    system("/bin/hello", 0, 0);
+    system("/bin/fish", 0, 0);
 
     while (1);
 }

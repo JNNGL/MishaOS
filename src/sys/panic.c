@@ -5,6 +5,8 @@
 
 static uint8_t _panic = 0;
 
+extern uintptr_t read_eip();
+
 void panic(const char* msg) {
     if (++_panic == 1) {
         terminal_init();
@@ -19,7 +21,7 @@ void panic(const char* msg) {
         };
 
         struct stackframe* stack;
-        asm("movl %%ebp, %0" : "=r"(stack) : : );
+        asm("movl %%ebp, %0" : "=r"(stack));
         for (uint32_t frame = 0; stack && frame < 20; ++frame) {
             kprintf(" 0x%08lx: %s\n", stack->eip, kernel_get_func_name(stack->eip));
             stack = stack->ebp;

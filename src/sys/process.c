@@ -1,6 +1,7 @@
 #include "process.h"
 
 #include <cpu/gdt.h>
+#include <cpu/io.h>
 #include <sys/kernel_mem.h>
 #include <sys/mount.h>
 #include <sys/heap.h>
@@ -247,8 +248,6 @@ void make_process_ready(process_t* process) {
         process_queue.last->next = &process->queue_node;
         process_queue.last = &process->queue_node;
     }
-
-    process->queue_node.queued = 1;
 }
 
 void make_process_reapable(process_t* process) {
@@ -420,6 +419,7 @@ int process_is_ready(process_t* process) {
 
 uintptr_t read_eip();
 
+__attribute__((returns_twice))
 pid_t fork() {
     asm("cli");
 
@@ -429,9 +429,8 @@ pid_t fork() {
     uintptr_t eip;
 
     process_t* parent = (process_t*) current_process;
-    page_directory_t* page_dir = pde_clone(current_page_directory, &pfa);
-
     process_t* new_process = spawn_process(current_process);
+    page_directory_t* page_dir = pde_clone(current_page_directory, &pfa);
     set_process_page_directory(new_process, page_dir);
     eip = read_eip();
 
@@ -450,13 +449,12 @@ pid_t fork() {
             new_process->thread.ebp = ebp - (current_process->image.stack - new_process->image.stack);
         }
         memcpy((void*) (new_process->image.stack - 0x8000), (void*) (current_process->image.stack - 0x8000), 0x8000);
-        uintptr_t o_stack = ((uintptr_t) current_process->image.stack - 0x8000);
-        uintptr_t n_stack = ((uintptr_t) new_process->image.stack - 0x8000);
-        uintptr_t offset = ((uintptr_t) current_process->syscall_regs - o_stack);
-        new_process->syscall_regs = (struct syscall_regs*)(n_stack + offset);
+        uintptr_t o_stack = (uintptr_t) current_process->image.stack - 0x8000;
+        uintptr_t n_stack = (uintptr_t) new_process->image.stack - 0x8000;
+        uintptr_t offset = (uintptr_t) current_process->syscall_regs - o_stack;
+        new_process->syscall_regs = (struct syscall_regs*) (n_stack + offset);
         new_process->thread.eip = eip;
         make_process_ready(new_process);
-        asm("sti");
         return new_process->id;
     } else {
         if (magic != 0xF3F5) {
@@ -467,12 +465,15 @@ pid_t fork() {
     }
 }
 
+__attribute__((returns_twice))
 pid_t clone(uintptr_t new_stack, uintptr_t thread_func, uintptr_t arg) {
+    asm("cli");
+
     uint32_t magic = 0xF3F5;
     uintptr_t esp;
     uintptr_t ebp;
     uintptr_t eip;
-    asm("cli");
+
     process_t* parent = (process_t*) current_process;
     page_directory_t* page_dir = current_page_directory;
     process_t* new_process = spawn_process(current_process);
@@ -514,7 +515,6 @@ pid_t clone(uintptr_t new_stack, uintptr_t thread_func, uintptr_t arg) {
         new_process->fds = current_process->fds;
         new_process->thread.eip = eip;
         make_process_ready(new_process);
-        asm("sti");
         return new_process->id;
     } else {
         if (magic != 0xF3F5) {
@@ -534,12 +534,12 @@ void switch_task(uint8_t reschedule) {
         return;
     }
 
-    if (!current_process->started) {
-        switch_next();
-    }
-
     if (!process_available()) {
         return;
+    }
+
+    if (!current_process->started) {
+        switch_next();
     }
 
     uintptr_t esp;
@@ -575,31 +575,29 @@ void switch_next() {
     uintptr_t ebp;
     uintptr_t eip;
 
-    if (!process_available()) {
-        return;
-    }
+    process_t* next_process;
+    do {
+        next_process = next_ready_process();
+    } while (next_process->finished);
 
-    current_process = next_ready_process();
-    eip = current_process->thread.eip;
-    esp = current_process->thread.esp;
-    ebp = current_process->thread.ebp;
+    eip = next_process->thread.eip;
+    esp = next_process->thread.esp;
+    ebp = next_process->thread.ebp;
 
-    if (current_process->finished) {
-        switch_next();
-    }
+    current_process = next_process;
+    current_process->started = 1;
 
     current_page_directory = current_process->thread.page_directory;
     enable_paging(current_page_directory);
     set_kernel_stack(current_process->image.stack);
 
-    current_process->started = 1;
+    asm volatile ("" : : : "memory");
 
     asm volatile("mov %0, %%ebx\n"
                  "mov %1, %%esp\n"
                  "mov %2, %%ebp\n"
                  "mov %3, %%cr3\n"
                  "mov $0xFA705, %%eax\n"
-                 "sti\n"
                  "jmp *%%ebx"
                  : : "r"(eip), "r"(esp), "r"(ebp), "r"(current_page_directory->physical_address));
 }
@@ -614,8 +612,8 @@ void enter_userspace(uintptr_t entry, uintptr_t stack, int argc, const char** ar
     stack -= sizeof(int);
     *((int*) stack) = argc;
 
-    asm volatile("mov %1, %%esp\n"
-                 "pushl $0x00\n"
+    asm volatile("mov %3, %%esp\n"
+                 "pushl $0xFF33FF55\n"
                  "mov $0x23, %%ax\n"
                  "mov %%ax, %%ds\n"
                  "mov %%ax, %%es\n"
@@ -624,27 +622,26 @@ void enter_userspace(uintptr_t entry, uintptr_t stack, int argc, const char** ar
                  "mov %%esp, %%eax\n"
                  "pushl $0x23\n"
                  "pushl %%eax\n"
-                 "pushl $0x202\n"
+                 "pushf\n"
+                 "popl %%eax\n"
+                 "orl $0x200, %%eax\n"
+                 "pushl %%eax\n"
                  "pushl $0x1B\n"
                  "pushl %0\n"
                  "iret\n"
-                 : : "m"(entry), "r"(stack)
-                 : "%ax", "%esp", "%eax");
+                 : : "m"(entry), "r"(argc), "r"(argv), "r"(stack));
 }
 
 void task_exit(int r) {
-    asm("cli");
     if (__builtin_expect(current_process->id == 0,0)) {
         switch_next();
-        asm("sti");
         return;
     }
 
-    kprintf("Process [%ld] %s terminated with code %d.\n", current_process->id, current_process->name, r);
+//    kprintf("Process [%ld] %s terminated with code %d.\n", current_process->id, current_process->name, r);
 
     current_process->status = r;
     current_process->finished = 1;
-    make_process_reapable((process_t*) current_process);
+//    make_process_reapable((process_t*) current_process);
     switch_next();
-    asm("sti");
 }

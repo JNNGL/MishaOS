@@ -120,8 +120,8 @@ file_descriptor_t* process_get_fd(process_t* process, uint32_t fd);
 uint32_t process_clone_fd(process_t* process, int from, int to);
 int process_is_ready(process_t* process);
 
-pid_t fork();
-pid_t clone(uintptr_t new_stack, uintptr_t thread_func, uintptr_t arg);
+__attribute__((returns_twice)) pid_t fork();
+__attribute__((returns_twice)) pid_t clone(uintptr_t new_stack, uintptr_t thread_func, uintptr_t arg);
 pid_t getpid();
 
 void switch_task(uint8_t reschedule);

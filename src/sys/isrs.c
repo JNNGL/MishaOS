@@ -130,6 +130,7 @@ void ps2_mouse_isr(struct interrupt_frame* frame) {
 
 __attribute__((interrupt))
 void pit_isr(struct interrupt_frame* frame) {
+    asm("cli");
     pit_tick();
     pic_master_eoi();
     kernel_poll();

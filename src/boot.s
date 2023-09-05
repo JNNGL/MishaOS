@@ -44,8 +44,8 @@ _start:
     push $kernel_physical_end
     push $kernel_physical_start
     xor %ebp, %ebp
-    call kernel_main
     cli
+    call kernel_main
 1:  hlt
     jmp 1b
 
